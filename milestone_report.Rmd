@@ -1,0 +1,510 @@
+---
+title: "Milestone Report"
+author: "arbkz"
+date: "18/08/2019"
+#output: rmdformats::readthedown
+output: rmdformats::html_clean
+#output: rmdformats::material
+#output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(cache = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+
+library(ggplot2)
+library(tidytext)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(igraph)
+library(ggraph)
+library(gridExtra)
+library(wordcloud)
+```
+# Introduction
+
+The goal of this report is to display some basic statistics about the datasets and outline plans to create a prediction algorithm. 
+This analysis will make extensive use of the tidy_text library to process the data, which wraps various other text processing libraries like quanteda and tm.
+
+The data files are read and randomly sampled then partitioned into training, testing and validation sets.
+The training sets are combined into a single data frame and then tokenised into words, bigrams and trigrams.
+
+Various summary statistics are then calculated and plotted.
+Finally the Bigrams are plotted as a directional graph to show word connections 
+
+## Data
+
+The dataset used in this project is provided by Swiftkey and Coursera and can be found [here](https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip).   
+and contains text in German, Russian, Swedish and English.
+
+The initial analysis will focus on the English data files: *en_US.blogs.txt*, *en_US.news.txt*, and *en_US.twitter.txt*
+
+The three data files consist of blog posts, news articles and random tweets. 
+159MB, 196MB and 200MB for a total of 4,269,678 lines of text combined from all the files.
+
+## Experimental Design 
+
+We sample 44,000 lines of text at random from the three files, taking approximately the same number of samples from each file. 
+We then split this into training, testing and validation sets (60%/20%/20%).
+
+We use will the training set for the expolaratory analysis and model training.
+
+Once we build our model, the testing set will be used ofor model selection and the validation set will be used to estimate out of sample error rate.
+
+```{r set_parameters, echo = FALSE}
+# set sample size and random seed
+set.seed(2604)
+sample_size <- 44000
+partition_splits <- c(0.6, 0.2, 0.2) # split for training, testing and validation set partioning (60%/20%/20%)
+file_splits <- c(0.33 ,0.33, 0.34) # split to determine numberm of lines to read from each of the 3 files
+
+sample_file_sizes <- floor(file_splits * sample_size)
+```
+
+```{r read_data, cache = TRUE, warning = FALSE, echo = FALSE}
+data_files <- dir("./data/final/en_US", full.names = TRUE)
+
+
+blogs <- data_files[1]
+news <- data_files[2] 
+twitter <- data_files[3]
+line_count <- c(0,0,0) 
+char_count <- c(0,0,0)
+
+#create a summary table that summarises major features of the data 
+data_summary <- tbl_df(data.frame(filename = data_files))
+```
+
+```{r read_data_2, cache = TRUE, warning = FALSE, echo = FALSE}
+# read in blog data and count the number of lines in the file
+# pick a set of random line numbers from 1 to number of lines ... the size of the set is total sample_size * file_split
+# cleanup
+
+blogs_data <- readLines(blogs) 
+line_count[1] <- length(blogs_data)
+
+                            n = 0
+for (i in 1:line_count[1])  n = n + nchar(blogs_data[i])
+char_count[1] <- n
+
+blogs_sample <- tibble(random_lines = blogs_data[sample(x = 1:line_count[1], size = sample_file_sizes[1])])
+
+rm(blogs_data)
+
+
+
+# read in news data and count the number of lines in the file
+# pick a set of random line numbers from 1 to number of lines ... the size of the set is total sample_size * file_split
+# cleanup
+
+news_data <- readLines(news) 
+line_count[2] <- length(news_data)
+
+                            n = 0
+for (i in 1:line_count[2])  n = n + nchar(news_data[i])
+char_count[2] <- n
+
+news_sample <- tibble(random_lines = news_data[sample(x = 1:line_count[2], size = sample_file_sizes[2])])
+
+rm(news_data)
+
+
+# read in twitter data and count the number of lines in the file
+# pick a set of random line numbers from 1 to number of lines ... the size of the set is total sample_size * file_split
+# cleanup
+twitter_data <- readLines(twitter) 
+line_count[3] <- length(twitter_data)
+
+                            n = 0
+for (i in 1:line_count[3])  n = n + nchar(twitter_data[i])
+char_count[3] <- n
+
+
+twitter_sample <- tibble(random_lines = twitter_data[sample(x = 1:line_count[3], size = sample_file_sizes[3])])
+ 
+rm(twitter_data) # cleanup
+
+data_summary$char_count <- char_count
+
+
+# read in profanity list for filtering
+
+profanity <- readLines('profanity_list_modified.txt')
+
+```
+
+```{r data_summary, cache = TRUE, warning = FALSE, echo = FALSE}
+# file_size_bytes <- c(0,0,0)
+# 
+# file_size_bytes[1] = file.info(blogs)$size
+# file_size_bytes[2] = file.info(news)$size
+# file_size_bytes[3] = file.info(twitter)$size
+
+file_info <- data.frame(filename = data_files, line_count = line_count, char_count = char_count)
+#t <- tableGrob(file_info)
+#grid.arrange(t)
+#grid.table(file_info)
+
+
+data_summary$line_count <- file_info$sample_line_count
+
+partitionData <- function(data_set, partition_splits) {
+
+    split_lines <- floor(partition_splits * dim(data_set)[1])
+    split_line_numbers <- vector(mode = "list", length = 3)
+    boundaries <- cumsum(split_lines)
+    # split_line_numbers <- data.frame(dataset = c("train", "test", "validation"),
+    #                                  start = c(1, cumsum(split_lines)[1] + 1, cumsum(split_lines)[2] + 1),
+    #                                  end   = c(cumsum(split_lines)[1], cumsum(split_lines)[2], dim(data_set)[1]))
+    split_line_numbers[[1]] <- seq(1, boundaries[1])
+    split_line_numbers[[2]] <- seq(boundaries[1] + 1, boundaries[2]) 
+    split_line_numbers[[3]] <- seq(boundaries[2] + 1, boundaries[3])
+    
+    split_line_numbers 
+}
+
+p_twitter <- partitionData(twitter_sample, partition_splits)
+p_blogs <- partitionData(blogs_sample, partition_splits)
+p_news <- partitionData(news_sample, partition_splits)
+
+
+twitter_train <-        twitter_sample[p_twitter[[1]], 1]
+twitter_test  <-        twitter_sample[p_twitter[[2]], 1]
+twitter_validation <-   twitter_sample[p_twitter[[3]], 1]
+
+blogs_train <-      blogs_sample[p_blogs[[1]], 1]
+blogs_test  <-      blogs_sample[p_blogs[[2]], 1]
+blogs_validation <- blogs_sample[p_blogs[[3]], 1]
+
+news_train <-       news_sample[p_news[[1]], 1]
+news_test  <-       news_sample[p_news[[2]], 1]
+news_validation <-  news_sample[p_news[[3]], 1]
+
+
+training_data <- rbind(blogs_train, news_train, twitter_train)
+training_data$data_set <- c(rep("blogs", nrow(blogs_train)), rep("news", nrow(news_train)), rep("twitter",nrow(twitter_train)))
+
+testing_data <- rbind(blogs_test, news_test, twitter_test)
+testing_data$data_set <- c(rep("blogs", nrow(blogs_test)), rep("news", nrow(news_test)), rep("twitter",nrow(twitter_test)))
+
+validation_data <- rbind(blogs_validation, news_validation, twitter_validation)
+validation_data$data_set <- c(rep("blogs", nrow(blogs_validation)), rep("news", nrow(news_validation)), rep("twitter",nrow(twitter_validation)))
+
+
+rm(blogs_train, news_train, twitter_train)
+rm(blogs_test, news_test, twitter_test)
+rm(blogs_validation, news_validation, twitter_validation)
+
+#twitter_sample_train <- twitter_sample[1:partition_splits[1] * length(twitter_sample)]
+#train_data      <- tibble(text = final_text[split_line_numbers[1,2] : split_line_numbers[1,3]])
+#test_data       <- tibble(text = final_text[split_line_numbers[2,2] : split_line_numbers[2,3]])
+#validation_data <- tibble(text = final_text[split_line_numbers[3,2] : split_line_numbers[3,3]])
+
+# cleanup
+
+```
+
+# Exploratory Data Analyis
+
+The steps in our EDA are as follows
+
+* Tokenize the text
+* Calculate some summary statistics
+* Plot a frequency histogram of ngrams overall and for each datset
+* Plot the frequency for the top 20 words from each dataset
+
+```{r eda, cache = TRUE}
+
+head(training_data)
+
+```
+
+### Tokenization 
+ 
+"A token is a meaningful unit of text, most often a word, that we are interested in using for further analysis, and tokenization is the process of splitting text into tokens." (Text Mining with R, 1.3, Silge and Robinson)
+
+We will use tidytext's unnest_tokens() function to split the text into words, bigrams and trigrams.   
+This will:   
+* strip all punctuation
+* convert everything to lowercase 
+* split the text into words/ngrams/sentences etc.
+
+We tokenize each of the texts separately and then merge the results into a single data frame.
+
+### Word/Bigram/Trigram Frequency
+
+For each word (or ngram) we will count the number of times each word occurs in the text then divide this by the total number of words in the text to find the term frequency.
+
+We then plot this as a histogram  to understand variation in the frequencies of words and word pairs across the different data sources. 
+
+We then plot the top 10 words bigrams and trigrams from each data sets.   
+
+We find that the words and ngrams have a long tail distribution where there are a few words/ngrams that occur frequently and many words/ngrams that occur very rarely.
+
+```{r tokenize_words, echo = FALSE}
+# tokenise and remove all numbers
+training_data_words <- training_data %>% 
+                        unnest_tokens(word, random_lines) %>% 
+                        filter(!str_detect(word, '[0-9]')) 
+
+head(training_data_words)
+
+```
+
+
+```{r word_summaries, echo = FALSE}
+# calculate word frequencies
+
+training_data_words <- training_data_words %>% 
+                        group_by(data_set) %>% 
+                        count(word, sort = TRUE) %>% 
+                        mutate(total = sum(n))
+
+
+# plot wordcloud
+
+par(mar = c(1,1,1,1), mfrow = c(1,2))
+
+training_data_words %>% with(wordcloud(word, n, max.words = 200))
+title(main = "word cloud with stopwords")
+
+training_data_words %>% anti_join(stop_words) %>%
+                        with(wordcloud(word, n, max.words = 200))
+title(main = "word cloud with no stopwords")
+
+#  plot frequency histograms
+
+training_data_words %>% 
+    ggplot(aes(n/total, fill = data_set)) +
+    geom_histogram(show.legend = FALSE) +
+    xlim(NA, 0.001) +
+    facet_wrap(~data_set, ncol = 3, scales = "free_y") +
+    labs(y = "count", x = "frequency", title = "Token Frequency", subtitle = "blogs, news and twitter") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+    
+training_data_words %>% anti_join(stop_words) %>% 
+                        group_by(data_set) %>% 
+                        top_n(10, n) %>%
+                        ungroup() %>% 
+                        mutate(data_set = factor(data_set, levels = c("blogs", "news", "twitter")),
+                               text_order = nrow(.):1) %>%
+                        ggplot(aes(reorder(word, text_order), n, fill = data_set)) +
+                        geom_bar(stat = "identity") +
+                        facet_wrap( ~ data_set, scales = "free_x") +
+                        labs(x = NULL, y = "Count", title = "Top 10 Words per dataset" , subtitle = "stopwords excluded") +
+                        coord_flip() +
+                        theme(legend.position="none")
+```
+
+
+```{r tokenize_bigrams, echo = FALSE}
+# Find all the bigrams and calculate summaries
+training_data_bigrams <- training_data %>% unnest_tokens(bigram, random_lines, token = "ngrams", n = 2)
+```
+
+
+```{r bigram_summaries, echo = FALSE}
+
+training_data_bigrams <- training_data_bigrams %>% 
+                            group_by(data_set) %>% 
+                            count(bigram, sort = TRUE) %>% 
+                            mutate(total = sum(n))
+
+```
+
+
+```{r bigram_plots, echo = FALSE}
+#training_data_bigrams <- training_data_bigrams %>% bind_tf_idf(bigram, data_set, n) 
+
+
+# training_data_bigrams %>%   count(bigram, sort = TRUE) %>%
+#                             mutate(text_order = nrow(.):1) %>%
+#                             ggplot(aes(log(n))) + geom_histogram(bins=15, color = blues9[9], fill = blues9[7]) +
+#                             labs(y = "log(token frequency)", x = "Count", title = "Bigram Frequency", subtitle = "blogs, news and twitter combined")
+
+training_data_bigrams %>% 
+    ggplot(aes(n/total, fill = data_set)) +
+    geom_histogram(show.legend = FALSE) +
+    xlim(NA, 0.001) +
+    facet_wrap(~data_set, ncol = 3, scales = "free_y") +
+    labs(y = "count", x = "frequency", title = "Bigram Frequency", subtitle = "blogs, news and twitter") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# bigram frequencies
+training_data_bigrams %>% separate(bigram, c("word_1","word_2"), sep = " ") %>%
+                          filter(!word_1 %in% stop_words$word) %>%
+                          filter(!str_detect(word_1, '[0-9]')) %>% 
+                          filter(!word_2 %in% stop_words$word) %>%
+                          filter(!str_detect(word_2, '[0-9]')) %>% 
+                          unite(bigram, word_1, word_2, sep = " ") %>% 
+                          group_by(data_set) %>% 
+                          top_n(10, n) %>%
+                          ungroup() %>%
+                          mutate(data_set = factor(data_set, levels = c("blogs", "news", "twitter")),
+                                  text_order = nrow(.):1) %>%
+                          ggplot(aes(reorder(bigram, text_order), n, fill = data_set)) +
+                          geom_bar(stat = "identity") +
+                          facet_wrap( ~ data_set, scales = "free_x") +
+                          coord_flip() +
+                          theme(legend.position="none") +
+                          labs(x = NULL, y = "Count", title = "Top 10 Bigrams per dataset", subtitle = "stopwords excluded")
+```
+
+
+```{r tokenize_trigrams, echo = FALSE}
+# find trigrams
+
+training_data_trigrams <- training_data %>% unnest_tokens(trigram, random_lines, token = "ngrams", n = 3)
+
+training_data_trigrams <- training_data_trigrams %>% 
+                            group_by(data_set) %>% 
+                            count(trigram, sort = TRUE) %>% 
+                            mutate(total = sum(n))
+
+# plot trigram frequency 
+
+training_data_trigrams %>% 
+    ggplot(aes(n/total, fill = data_set)) +
+    geom_histogram(show.legend = FALSE) +
+    xlim(NA, 0.001) +
+    facet_wrap(~data_set, ncol = 3, scales = "free_y") +
+    labs(y = "count", x = "frequency", title = "Trigram Frequency", subtitle = "blogs, news and twitter") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+# trigram frequencies
+training_data_trigrams %>% separate(trigram, c("word_1","word_2", "word_3"), sep = " ") %>%
+                          filter(!word_1 %in% stop_words$word) %>%
+                          filter(!str_detect(word_1, '[0-9]')) %>% 
+                          filter(!word_2 %in% stop_words$word) %>%
+                          filter(!str_detect(word_2, '[0-9]')) %>% 
+                          filter(!word_3 %in% stop_words$word) %>%
+                          filter(!str_detect(word_3, '[0-9]')) %>% 
+                          unite(trigram, word_1, word_2, word_3, sep = " ") %>% 
+                          group_by(data_set) %>% 
+                          top_n(10, n) %>%
+                          ungroup() %>%
+                          mutate(data_set = factor(data_set, levels = c("blogs", "news", "twitter")),
+                                  text_order = nrow(.):1) %>%
+                          ggplot(aes(reorder(trigram, text_order), n, fill = data_set)) +
+                          geom_bar(stat = "identity") +
+                          facet_wrap( ~ data_set, scales = "free_x") +
+                          coord_flip() +
+                          theme(legend.position="none") +
+                          labs(x = NULL, y = "Count", title = "Top 10 Trigram per dataset", subtitle = "stopwords excluded")
+
+```
+
+
+```{r word_graphs, echo = FALSE}
+# plot a bigram graph
+ 
+
+training_data_bigrams[1:300,] %>%  ungroup %>%  # top_n runs super slowly ... consider alternate methods
+                                separate(bigram, c("word_1","word_2"), sep = " ") %>%  
+                                    select(word_1, word_2, n) %>% 
+                                        graph_from_data_frame() %>%
+                                        ggraph(layout = "fr") +
+                                        geom_edge_link(edge_colour = "dark grey", arrow = arrow(angle = 3, type = "closed")) +
+                                        #geom_node_point(colour = "dark grey") +
+                                        geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+                                        labs(x = NULL, y = NULL, title = "Bigram Connections")
+
+```
+
+
+```{r word_graphs_pt_2, echo = FALSE}
+training_data_bigrams %>%   filter(n > 10) %>% ungroup %>% 
+                            separate(bigram, c("word_1","word_2"), sep = " ") %>%
+                            filter(!word_1 %in% stop_words$word) %>%
+                            filter(!str_detect(word_1, '[0-9]')) %>%
+                            filter(!word_2 %in% stop_words$word) %>%
+                            filter(!str_detect(word_2, '[0-9]')) %>%
+                            select(word_1, word_2, n) %>% 
+                            graph_from_data_frame() %>%
+                            ggraph(layout = "fr") +
+                            geom_edge_link(edge_colour = "dark grey", arrow = arrow(angle = 3, type = "closed")) +
+                            #geom_node_point(colour = "light grey") +
+                            geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+                            labs(x = NULL, y = NULL, title = "Bigram Connections", subtitle = "Stopwords removed")
+
+```
+
+
+```{r summaries, echo = FALSE}
+# -------------------------- Calculate summary stats
+
+data_summary$word_count <- training_data_words %>%     group_by(data_set) %>% 
+                            summarise(word_count = n()) %>% 
+                                select(word_count)
+
+
+
+
+# data_summary$clean_word_count <- training_data_words %>%     
+#                                     anti_join(stop_words) %>% 
+#                                     filter(!str_detect(word, '[0-9]')) %>%
+#                                     group_by(data_set) %>% 
+#                                     summarise(word_count_nostops = n()) %>% 
+#                                     select(word_count_nostops)
+
+data_summary$bigram_count <- training_data_bigrams %>%   
+                                group_by(data_set) %>% 
+                                summarise(bigram_count = n()) %>% 
+                                select(bigram_count)
+
+
+# data_summary$clean_bigram_count <- training_data_bigrams %>%   
+#                                 separate(bigram, c("word_1","word_2"), sep = " ") %>%  
+#                                 filter(!word_1 %in% stop_words$word) %>%
+#                                 filter(!str_detect(word_1, '[0-9]')) %>% 
+#                                 filter(!word_2 %in% stop_words$word) %>%
+#                                 filter(!str_detect(word_2, '[0-9]')) %>% 
+#                                 group_by(data_set) %>% 
+#                                 summarise(bigram_count_nostops = n()) %>% 
+#                                 select(bigram_count_nostops)
+
+
+data_summary$trigram_count <- training_data_trigrams %>% group_by(data_set) %>% 
+                                summarise(trigram_count = n()) %>% 
+                                select(trigram_count)
+# 
+# data_summary$clean_trigram_count <- training_data_trigrams %>% separate(trigram, c("word_1","word_2", "word_3"), sep = " ") %>%
+#                                filter(!word_1 %in% stop_words$word) %>%
+#                                filter(!str_detect(word_1, '[0-9]')) %>% 
+#                                filter(!word_2 %in% stop_words$word) %>%
+#                                filter(!str_detect(word_2, '[0-9]')) %>% 
+#                                filter(!word_3 %in% stop_words$word) %>%
+#                                filter(!str_detect(word_3, '[0-9]')) %>% 
+#                                group_by(data_set) %>% 
+#                                summarise(trigram_count_nostops = n()) %>% 
+#                                 select(trigram_count_nostops)
+
+data_summary
+```
+
+# Findings   
+
+Findings so far:
+
+* Twitter data has on average 1/3 of the number of words per line compared to news (data) and blogs so we may need to combine the three datasets in a more balanced way (to prevent bias) read more lines from twitter
+* More data cleaning is required especially the twitter data where there are many words that include special characters and usernames and hastags and repeated words forming bigrams/trigrams
+* profanity filtering is hard :-)
+* Need a better regex to deal with special characters and non english words
+
+## Plans going forward
+
+* More data cleaning, especially the twitter data (improved regex, better profanity list, remove words with special characters indicating foreign language)
+* Use the cleaned data to build our ngram model that can predict the next word based on previous n words
+* Incorporate this model into a simple shiny app
+* Find a good trade off between performance and accuracy so we can achieve decent performance and stay within the free account limits (1GB RAM)
+* Investigate smoothing and backoff to help our predictor deal with words that are not in the corpus
+
+# References
+
+Bradley Boehmke, *UC Business Analytics R Programming Guide, Text Mining: Creating Tidy Text* [https://uc-r.github.io/tidy_text](https://uc-r.github.io/tidy_text)   
+
+2019, Julia Silge and David Robinson, *Text Mining with R* [https://www.tidytextmining.com/tidytext.html](https://www.tidytextmining.com/tidytext.html)
