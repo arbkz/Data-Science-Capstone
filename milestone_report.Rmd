@@ -503,11 +503,9 @@ Findings so far:
 * Find a good trade off between performance and accuracy so we can achieve decent performance and stay within the free account limits (1GB RAM)
 * Investigate smoothing and backoff to help our predictor deal with words that are not in the corpus
 
-
-
 ## References
 
-Source code on github [source](https://github.com/arbkz/Data-Science-Capstone/blob/master/milestone_report.Rmd)
+ [Source on github](https://github.com/arbkz/Data-Science-Capstone/blob/master/milestone_report.Rmd)
 
 Bradley Boehmke, *UC Business Analytics R Programming Guide, Text Mining: Creating Tidy Text* [https://uc-r.github.io/tidy_text](https://uc-r.github.io/tidy_text)   
 
